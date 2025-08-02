@@ -203,8 +203,9 @@ def estimate_hours_and_cost(
     return total_hours, total_cost
 
 
-def compute_contingency(cost: float, contingency: float) -> float:
-    return cost * contingency
+def compute_contingency(cost: float, contingency) -> float:
+    """Return contingency amount as float; accepts Decimal/float/int."""
+    return _f(cost) * _f(contingency)
 
 
 def earned_value(
