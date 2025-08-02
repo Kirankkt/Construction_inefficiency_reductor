@@ -4,6 +4,7 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 
+from decimal import Decimal
 import pandas as pd
 from openpyxl import load_workbook
 import plotly.express as px
@@ -187,15 +188,26 @@ def apply_calendar(acts: List[Activity], start_date: dt.date) -> None:
         a.end_date = start_date + dt.timedelta(days=a.ef - 1)
 
 
+# ------------------------------- Numeric helpers -------------------------------
+def _f(x) -> float:
+    """Coerce Decimal/float/int/str numerics to float safely."""
+    if isinstance(x, Decimal):
+        return float(x)
+    if isinstance(x, (int, float)):
+        return float(x)
+    try:
+        return float(x)
+    except Exception:
+        return 0.0
+
+
 # ------------------------------- Costs & EV -------------------------------
-from decimal import Decimal  # add at top of file
-
-def _f(x) -> float:          # helper: Decimal -> float
-    return float(x) if isinstance(x, (Decimal, int, float)) else 0.0
-
-
 def estimate_hours_and_cost(
-    acts, hours_per_day, base_rate_inr, labour_burden, inefficiency
+    acts: List[Activity],
+    hours_per_day,
+    base_rate_inr,
+    labour_burden,
+    inefficiency,
 ) -> Tuple[float, float]:
     total_hours = sum(a.duration for a in acts) * _f(hours_per_day)
     loaded_rate = _f(base_rate_inr) * (1 + _f(labour_burden)) * (1 + _f(inefficiency))
@@ -203,32 +215,31 @@ def estimate_hours_and_cost(
     return total_hours, total_cost
 
 
-def compute_contingency(cost: float, contingency) -> float:
-    """Return contingency amount as float; accepts Decimal/float/int."""
+def compute_contingency(cost, contingency) -> float:
     return _f(cost) * _f(contingency)
 
 
 def earned_value(
     acts: List[Activity],
     today: dt.date,
-    hours_per_day: float,
-    base_rate_inr: float,
-    labour_burden: float,
-    inefficiency: float,
+    hours_per_day,
+    base_rate_inr,
+    labour_burden,
+    inefficiency,
     pct_by_task: Dict[str, float],
 ) -> Dict[str, float]:
-    loaded_rate = base_rate_inr * (1 + labour_burden) * (1 + inefficiency)
+    loaded_rate = _f(base_rate_inr) * (1 + _f(labour_burden)) * (1 + _f(inefficiency))
     PV = EV = AC = 0.0
     for a in acts:
-        budget = a.duration * hours_per_day * loaded_rate
+        budget = float(a.duration) * _f(hours_per_day) * float(loaded_rate)
         if a.end_date < today:
             planned_pct = 1.0
         elif a.start_date > today:
             planned_pct = 0.0
         else:
             planned_days = (today - a.start_date).days + 1
-            planned_pct = min(1.0, max(0.0, planned_days / a.duration))
-        actual_pct = min(1.0, max(0.0, pct_by_task.get(a.name, 0.0) / 100.0))
+            planned_pct = min(1.0, max(0.0, planned_days / max(1, a.duration)))
+        actual_pct = min(1.0, max(0.0, _f(pct_by_task.get(a.name, 0.0)) / 100.0))
         PV += budget * planned_pct
         EV += budget * actual_pct
         AC += budget * actual_pct  # proxy until actual hours are tracked
