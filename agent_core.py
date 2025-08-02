@@ -188,15 +188,17 @@ def apply_calendar(acts: List[Activity], start_date: dt.date) -> None:
 
 
 # ------------------------------- Costs & EV -------------------------------
+from decimal import Decimal  # add at top of file
+
+def _f(x) -> float:          # helper: Decimal -> float
+    return float(x) if isinstance(x, (Decimal, int, float)) else 0.0
+
+
 def estimate_hours_and_cost(
-    acts: List[Activity],
-    hours_per_day: float,
-    base_rate_inr: float,
-    labour_burden: float,
-    inefficiency: float,
+    acts, hours_per_day, base_rate_inr, labour_burden, inefficiency
 ) -> Tuple[float, float]:
-    total_hours = sum(a.duration for a in acts) * hours_per_day
-    loaded_rate = base_rate_inr * (1 + labour_burden) * (1 + inefficiency)
+    total_hours = sum(a.duration for a in acts) * _f(hours_per_day)
+    loaded_rate = _f(base_rate_inr) * (1 + _f(labour_burden)) * (1 + _f(inefficiency))
     total_cost = total_hours * loaded_rate
     return total_hours, total_cost
 
