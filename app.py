@@ -140,6 +140,13 @@ def main():
 
     pid = st.session_state.pid
     proj = fetch_project(pid)
+    # Sanitize Decimal values from DB to floats once
+    hours = float(proj["hours_per_day"])
+    rate = float(proj["base_rate_inr"])
+    burden = float(proj["labour_burden"])
+    ineff = float(proj["inefficiency"])
+    cont = float(proj["contingency"])
+
     df_tasks_raw = fetch_tasks(pid)
     if df_tasks_raw.empty:
         st.warning("No tasks exist for this project. Re-upload the Excel and try again.")
@@ -189,10 +196,8 @@ def main():
         )
         acts.append(a)
 
-    total_hours, total_cost = estimate_hours_and_cost(
-        acts, proj["hours_per_day"], proj["base_rate_inr"], proj["labour_burden"], proj["inefficiency"]
-    )
-    total_with_cont = total_cost + compute_contingency(total_cost, proj["contingency"])
+    total_hours, total_cost = estimate_hours_and_cost(acts, hours, rate, burden, ineff)
+    total_with_cont = total_cost + compute_contingency(total_cost, cont)
 
     st.markdown(
         f"**Total hours:** {total_hours:.1f} h &nbsp;&nbsp; "
@@ -224,9 +229,7 @@ def main():
 
     # EV / Schedule Health
     st.markdown("### Earned Value & Schedule Health")
-    ev = earned_value(
-        acts, today, proj["hours_per_day"], proj["base_rate_inr"], proj["labour_burden"], proj["inefficiency"], pct_by_name
-    )
+    ev = earned_value(acts, today, hours, rate, burden, ineff, pct_by_name)
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("SPI", f"{ev['SPI']:.2f}")
     k2.metric("CPI", f"{ev['CPI']:.2f}")
