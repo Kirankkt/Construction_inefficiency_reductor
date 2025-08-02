@@ -261,15 +261,24 @@ def daily_workload_by_trade(acts: List[Activity], start_date: dt.date) -> pd.Dat
 
 
 def gaps_by_area(acts: List[Activity]) -> pd.DataFrame:
-    df = pd.DataFrame([{"area": a.area, "es": a.es, "ef": a.ef, "name": a.name} for a in acts]).sort_values(["area", "es"])
+    """Return idle gaps by area. If no gaps exist, return an empty, well-formed DataFrame."""
+    df = pd.DataFrame(
+        [{"area": a.area, "es": a.es, "ef": a.ef, "name": a.name} for a in acts]
+    ).sort_values(["area", "es"])
     rows = []
     for area, g in df.groupby("area"):
         prev_ef = None
         for _, r in g.iterrows():
             if prev_ef is not None and r["es"] > prev_ef + 1:
-                rows.append({"area": area, "gap_days": int(r["es"] - prev_ef - 1), "after_task": r["name"]})
+                rows.append(
+                    {"area": area, "gap_days": int(r["es"] - prev_ef - 1), "after_task": r["name"]}
+                )
             prev_ef = r["ef"]
-    return pd.DataFrame(rows).sort_values(["area", "gap_days"], ascending=[True, False])
+    out = pd.DataFrame(rows, columns=["area", "gap_days", "after_task"])
+    if out.empty:
+        # prevent KeyError during .sort_values upstream
+        return pd.DataFrame(columns=["area", "gap_days", "after_task"])
+    return out.sort_values(["area", "gap_days"], ascending=[True, False]).reset_index(drop=True)
 
 
 def fragmentation_by_trade(acts: List[Activity]) -> pd.DataFrame:
