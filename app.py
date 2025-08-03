@@ -14,6 +14,7 @@ from db import (
     save_schedule_file, upsert_tasks, fetch_project, fetch_tasks,
     latest_percent_by_task_id, save_progress_updates
 )
+from chatbot import answer_question  # NEW
 
 st.set_page_config(page_title="Construction Manager — Kerala", layout="wide")
 
@@ -105,7 +106,6 @@ def main():
     # ---------------- Planned Activities (with CPM) ----------------
     st.subheader("Planned Activities (with CPM)")
 
-    # Filters for readability (guard empty)
     areas = sorted(df_tasks.get("Area", pd.Series(dtype=str)).dropna().unique().tolist())
     trades = sorted(df_tasks.get("Trade", pd.Series(dtype=str)).dropna().unique().tolist())
 
@@ -126,7 +126,7 @@ def main():
 
     st.dataframe(df_view, use_container_width=True, height=420)
 
-    # Reconstruct Activity objects from DB rows for metrics/EV/plots
+    # Reconstruct activities
     acts = []
     for _, r in df_tasks.iterrows():
         acts.append(Activity(
@@ -137,7 +137,6 @@ def main():
             start_date=pd.to_datetime(r["Start"]).date(), end_date=pd.to_datetime(r["Finish"]).date()
         ))
 
-    # Totals (float() to avoid Decimal interactions)
     total_hours, total_cost = estimate_hours_and_cost(
         acts, float(proj["hours_per_day"]), float(proj["base_rate_inr"]),
         float(proj["labour_burden"]), float(proj["inefficiency"])
@@ -219,6 +218,35 @@ def main():
         ))
     fig = make_gantt(f_acts, {k:v for k,v in pct_by_name.items() if k in df_view["name"].tolist()}, height_per_task=26)
     st.plotly_chart(fig, use_container_width=True)
+
+    # ---------------- AI CM Assistant (LLM chatbot) ----------------
+    st.markdown("### AI CM Assistant")
+    st.caption("Ask about the plan, daily activities, bottlenecks, or ways to reduce inefficiency. The assistant only uses your project context.")
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    # render history
+    for role, content in st.session_state.chat_history:
+        with st.chat_message(role):
+            st.write(content)
+
+    q = st.chat_input("e.g., \"What’s scheduled on 2025-08-15?\" or \"How do I shorten the Dining Room work?\"")
+    if q:
+        with st.chat_message("user"):
+            st.write(q)
+        answer, sources = answer_question(pid, q)
+        with st.chat_message("assistant"):
+            st.write(answer)
+            if sources:
+                st.markdown(
+                    "**Sources:** " + ", ".join(
+                        [f"[Task {s['id']}] {s['name']}" if s["type"] == "task"
+                         else f"[Gap] {s['area']} ({s['gap_days']}d after '{s['after_task']}')" for s in sources]
+                    )
+                )
+        st.session_state.chat_history.append(("user", q))
+        st.session_state.chat_history.append(("assistant", answer))
 
 
 if __name__ == "__main__":
