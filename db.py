@@ -1,12 +1,13 @@
 # db.py
 import datetime as dt
+import hashlib
 from typing import Dict, List
 
 import pandas as pd
 import streamlit as st
 from sqlalchemy import (
     create_engine, MetaData, Table, Column, Integer, String, Date, DateTime,
-    Boolean, Numeric, Text, func, select, insert, delete
+    Boolean, Numeric, Text, LargeBinary, func, select, insert, update, delete
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import text as sql_text
@@ -22,7 +23,6 @@ def get_engine() -> Engine:
     """
     db_url = st.secrets.get("DATABASE_URL", None)
     if not db_url:
-        # Fallback (local dev): SQLite file
         db_url = "sqlite:///app.db"
     return create_engine(db_url, pool_pre_ping=True, future=True)
 
@@ -70,6 +70,17 @@ progress_updates = Table(
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
 )
 
+# Store original Excel baseline versions
+schedule_files = Table(
+    "schedule_files", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("project_id", Integer, nullable=False),
+    Column("filename", String, nullable=False),
+    Column("sha256", String, nullable=False),
+    Column("content", LargeBinary, nullable=False),
+    Column("uploaded_at", DateTime(timezone=True), server_default=func.now()),
+)
+
 
 def init_db() -> None:
     """Create tables if they don't exist."""
@@ -105,7 +116,6 @@ def create_project(
         try:
             pid = conn.execute(stmt).scalar_one()
         except Exception:
-            # SQLite older versions may not support RETURNING; fallback
             res = conn.execute(
                 insert(projects).values(
                     name=name,
@@ -119,6 +129,96 @@ def create_project(
             )
             pid = int(res.inserted_primary_key[0])
     return pid
+
+
+def list_projects() -> List[dict]:
+    engine = get_engine()
+    with engine.begin() as conn:
+        rows = conn.execute(
+            select(projects.c.id, projects.c.name).order_by(projects.c.id.desc())
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def fetch_project_by_name(name: str) -> dict:
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            select(projects).where(projects.c.name == name)
+        ).mappings().first()
+    return dict(row) if row else {}
+
+
+def get_or_create_project(
+    name: str,
+    start_date: dt.date,
+    hours_per_day: float,
+    base_rate_inr: float,
+    labour_burden: float,
+    inefficiency: float,
+    contingency: float,
+) -> int:
+    """One row per project name. Update settings if it already exists."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        existing = conn.execute(
+            select(projects.c.id).where(projects.c.name == name)
+        ).scalar()
+        if existing:
+            conn.execute(
+                update(projects)
+                .where(projects.c.id == existing)
+                .values(
+                    start_date=start_date,
+                    hours_per_day=hours_per_day,
+                    base_rate_inr=base_rate_inr,
+                    labour_burden=labour_burden,
+                    inefficiency=inefficiency,
+                    contingency=contingency,
+                )
+            )
+            return int(existing)
+        return create_project(
+            name, start_date, hours_per_day, base_rate_inr, labour_burden, inefficiency, contingency
+        )
+
+
+def save_schedule_file(project_id: int, filename: str, content_bytes: bytes) -> int:
+    """Versioned store of the original Excel baseline."""
+    sha = hashlib.sha256(content_bytes).hexdigest()
+    engine = get_engine()
+    with engine.begin() as conn:
+        try:
+            rid = conn.execute(
+                insert(schedule_files)
+                .values(project_id=project_id, filename=filename, sha256=sha, content=content_bytes)
+                .returning(schedule_files.c.id)
+            ).scalar_one()
+        except Exception:
+            res = conn.execute(
+                insert(schedule_files).values(
+                    project_id=project_id, filename=filename, sha256=sha, content=content_bytes
+                )
+            )
+            rid = int(res.inserted_primary_key[0])
+    return int(rid)
+
+
+def fetch_latest_schedule_file(project_id: int) -> dict:
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            select(
+                schedule_files.c.id,
+                schedule_files.c.filename,
+                schedule_files.c.content,
+                schedule_files.c.uploaded_at,
+            )
+            .where(schedule_files.c.project_id == project_id)
+            .order_by(schedule_files.c.uploaded_at.desc())
+            .limit(1)
+        ).mappings().first()
+    return dict(row) if row else {}
 
 
 def upsert_tasks(project_id: int, df: pd.DataFrame) -> None:
@@ -145,7 +245,7 @@ def upsert_tasks(project_id: int, df: pd.DataFrame) -> None:
                     es=int(r["ES"]), ef=int(r["EF"]),
                     ls=int(r["LS"]), lf=int(r["LF"]),
                     slack=int(r["Slack"]),
-                    is_critical=bool(r["Critical?"]),
+                    is_critical=bool(r["Critical?"] or False),
                 )
             )
         if rows:
@@ -191,7 +291,6 @@ def latest_percent_by_task_id(task_ids: List[int]) -> Dict[int, float]:
         return {}
     engine = get_engine()
     with engine.begin() as conn:
-        # For portability across engines, use a simple correlated subquery in text
         q = sql_text(
             """
             SELECT t.id AS task_id,
