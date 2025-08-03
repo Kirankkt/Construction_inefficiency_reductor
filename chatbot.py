@@ -33,6 +33,14 @@ def _fmt_date(x) -> str:
         return str(x)
 
 
+def _sget(r: pd.Series, *names, default=0):
+    """Series-get: return first present name (works for ES/ef etc.)."""
+    for n in names:
+        if n in r.index:
+            return r[n]
+    return default
+
+
 # --------- context builder ----------
 def build_context(project_id: int) -> Tuple[str, List[Dict]]:
     """
@@ -47,22 +55,29 @@ def build_context(project_id: int) -> Tuple[str, List[Dict]]:
     if tasks_df.empty:
         return f"Project '{proj['name']}' has no tasks in the database.", []
 
-    # Normalise names as app.py expects
+    # Normalise names exactly as app.py expects
     rename_map = {
         "area_name": "Area", "planned_start": "Start", "planned_finish": "Finish",
         "duration_days": "Duration (days)", "is_critical": "Critical?",
     }
     df = tasks_df.rename(columns=rename_map).copy()
 
-    # Build Activity list
+    # Build Activity list (robust to ES/EF/LS/LF/Slack vs es/ef/ls/lf/slack)
     acts: List[Activity] = []
     for _, r in df.iterrows():
         acts.append(Activity(
-            name=r["name"], area=r.get("Area",""), trade=r.get("Trade",""),
-            description=r.get("Description",""), start_day=1, end_day=1,
-            duration=int(r["Duration (days)"]), es=int(r["es"]), ef=int(r["ef"]),
-            ls=int(r["ls"]), lf=int(r["lf"]), slack=int(r["slack"]),
-            is_critical=bool(r["Critical?"]),
+            name=r["name"],
+            area=r.get("Area", ""),
+            trade=r.get("Trade", ""),
+            description=r.get("Description", ""),
+            start_day=1, end_day=1,
+            duration=int(_sget(r, "Duration (days)", "duration_days", default=1)),
+            es=int(_sget(r, "ES", "es", default=0)),
+            ef=int(_sget(r, "EF", "ef", default=0)),
+            ls=int(_sget(r, "LS", "ls", default=0)),
+            lf=int(_sget(r, "LF", "lf", default=0)),
+            slack=int(_sget(r, "Slack", "slack", default=0)),
+            is_critical=bool(_sget(r, "Critical?", "is_critical", default=False)),
             start_date=pd.to_datetime(r["Start"]).date(),
             end_date=pd.to_datetime(r["Finish"]).date(),
         ))
@@ -74,12 +89,11 @@ def build_context(project_id: int) -> Tuple[str, List[Dict]]:
     ineff  = _f(proj["inefficiency"])
     cont   = _f(proj["contingency"])
 
-    # Costs + EV (planned baseline; progress is entered elsewhere)
+    # Costs + EV (baseline view as of today; actual progress can be added later)
+    today = dt.date.today()
     total_hours, total_cost = estimate_hours_and_cost(acts, hours, rate, burden, ineff)
     total_with_cont = total_cost + compute_contingency(total_cost, cont)
-
-    today = dt.date.today()
-    pct_by_name: Dict[str, float] = {}  # using plan-only EV unless you wire actual %s here
+    pct_by_name: Dict[str, float] = {}  # baseline-only EV for now
     ev = earned_value(acts, today, hours, rate, burden, ineff, pct_by_name)
 
     # Critical path and upcoming
@@ -88,13 +102,17 @@ def build_context(project_id: int) -> Tuple[str, List[Dict]]:
 
     crit_lines = [
         f"[Task {int(r.id)}] {r['name']} | Area={r['Area']} | Trade={r['Trade']} | "
-        f"Start={_fmt_date(r['Start'])} | Finish={_fmt_date(r['Finish'])} | Dur={int(r['Duration (days)'])}d | Slack={int(r['slack'])}"
+        f"Start={_fmt_date(r['Start'])} | Finish={_fmt_date(r['Finish'])} | "
+        f"Dur={int(_sget(r, 'Duration (days)', 'duration_days', default=1))}d | "
+        f"Slack={int(_sget(r, 'Slack', 'slack', default=0))}"
         for _, r in crit.iterrows()
     ][:20]
 
     up_lines = [
         f"[Task {int(r.id)}] {r['name']} | Area={r['Area']} | Trade={r['Trade']} | "
-        f"Start={_fmt_date(r['Start'])} | Finish={_fmt_date(r['Finish'])} | Dur={int(r['Duration (days)'])}d | Critical={bool(r['Critical?'])}"
+        f"Start={_fmt_date(r['Start'])} | Finish={_fmt_date(r['Finish'])} | "
+        f"Dur={int(_sget(r, 'Duration (days)', 'duration_days', default=1))}d | "
+        f"Critical={bool(_sget(r, 'Critical?', 'is_critical', default=False))}"
         for _, r in upcoming.iterrows()
     ]
 
